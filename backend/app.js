@@ -1,0 +1,16 @@
+import express from "express";
+import cors from "cors";
+import {createServer} from 'node:http';
+
+import mongoose from "mongoose";
+import connectToSocket from "./src/controllers/socketManager.js";
+
+const app = express();
+const server = createServer(app);
+const io = connectToSocket(server);
+
+app.use(express.json({ limit: "40kb" }));
+app.use(express.urlencoded({ limit: "40kb", extended: true }));
+app.use(cors());
+
+export default app;
