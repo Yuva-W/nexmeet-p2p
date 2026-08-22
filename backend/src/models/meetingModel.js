@@ -8,8 +8,8 @@ const meetingSchema = new Schema(
         meetingCode: {
             type: String,
             required: true
-        },
-    }
+        }
+    },
     {
         timestamps: true
     }
