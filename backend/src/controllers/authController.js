@@ -7,9 +7,31 @@ const register = async (req, res) => {
     try {
         const {name, username, password} = req.body;
 
-        const existingUser = await User.findOne({ username });
+        // Backend validation - don't trust frontend
+        if (!name || !name.trim()) {
+            return res.status(httpStatus.BAD_REQUEST).json({
+                success: false,
+                message: "Name is required"
+            });
+        }
 
-        console.log(`user: ${existingUser}`);
+        if (!username || !username.trim()) {
+            return res.status(httpStatus.BAD_REQUEST).json({
+                success: false,
+                message: "Username is required"
+            });
+        }
+
+        if (!password || password.length < 6) {
+            return res.status(httpStatus.BAD_REQUEST).json({
+                success: false,
+                message: "Password must be at least 6 characters"
+            });
+        }
+
+        const trimmedUsername = username.trim().toLowerCase();
+
+        const existingUser = await User.findOne({ username: trimmedUsername });
 
         if (existingUser){
             return res.status(httpStatus.CONFLICT).json({
@@ -21,12 +43,12 @@ const register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const user = await User.create({
-            name,
-            username,
+            name: name.trim(),
+            username: trimmedUsername,
             password: hashedPassword
         });
 
-        res.status(httpStatus.OK).json({
+        return res.status(httpStatus.OK).json({
             success: true,
             message: "User Registered successfully",
             user: {
@@ -37,7 +59,12 @@ const register = async (req, res) => {
             }
         });
     } catch (error) {
-        console.log(`error: ${error.message}`);
+        console.error(`register error: ${error.message}`);
+
+        return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+            success: false,
+            message: "Internal server error"
+        });
     }
 
 };
@@ -46,7 +73,22 @@ const login = async (req, res) => {
     try {
         const { username, password} = req.body;
 
-        const user = await User.findOne({ username });
+        if (!username || !username.trim()) {
+            return res.status(httpStatus.BAD_REQUEST).json({
+                success: false,
+                message: "Username is required"
+            });
+        }
+
+        if (!password) {
+            return res.status(httpStatus.BAD_REQUEST).json({
+                success: false,
+                message: "Password is required"
+            });
+        }
+
+        const trimmedUsername = username.trim().toLowerCase();
+        const user = await User.findOne({ username: trimmedUsername });
 
         if (!user){
             return res.status(httpStatus.UNAUTHORIZED).json({
@@ -75,7 +117,7 @@ const login = async (req, res) => {
             }
         );
 
-        res.status(httpStatus.OK).json({
+        return res.status(httpStatus.OK).json({
             success: true,
             message: "Logged in successfully",
             user: {
@@ -86,7 +128,12 @@ const login = async (req, res) => {
             }
         });
     } catch (error) {
-        console.log(`error: ${error.message}`);
+        console.error(`login error: ${error.message}`);
+
+        return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+            success: false,
+            message: "Internal server error"
+        });
     };
 
 };

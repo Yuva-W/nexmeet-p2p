@@ -6,9 +6,11 @@ let timeOnline = {};
 
 const connectToSocket = (server) => {
 
+    const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+
     const io = new Server(server, {
         cors: {
-            origin: "http://localhost:5173",
+            origin: clientUrl,
             methods: ["GET", "POST"],
             credentials: true,
         },
