@@ -2,13 +2,15 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import Chat from "../components/Chat";
+import VideoGrid from "../components/VideoGrid";
+import MeetingControls from "../components/MeetingControls";
+import ParticipantList from "../components/ParticipantList";
 
 const VideoMeet = () => {
   const { code } = useParams();
   const navigate = useNavigate();
 
   const socketRef = useRef(null);
-  const localVideoRef = useRef(null);
   const containerRef = useRef(null);
 
   const peersRef = useRef({});
@@ -20,6 +22,10 @@ const VideoMeet = () => {
   const [users, setUsers] = useState([]);
   const [remoteStreams, setRemoteStreams] = useState({});
 
+  // Media streams for UI
+  const [localStream, setLocalStream] = useState(null);
+  const [screenStream, setScreenStream] = useState(null);
+
   // Controls state
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
@@ -27,6 +33,7 @@ const VideoMeet = () => {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [showParticipants, setShowParticipants] = useState(false);
 
   // Screen sharing refs
   const screenStreamRef = useRef(null);
@@ -226,7 +233,7 @@ const VideoMeet = () => {
   }, [code]);
 
   // =========================
-  // MEETING CONTROLS (Phase 1)
+  // MEETING CONTROLS
   // =========================
 
   const handleToggleMic = useCallback(() => {
@@ -271,9 +278,9 @@ const VideoMeet = () => {
   // =========================
 
   const stopScreenSharing = useCallback(() => {
-    const screenStream = screenStreamRef.current;
-    if (screenStream) {
-      screenStream.getTracks().forEach((t) => {
+    const currentScreenStream = screenStreamRef.current;
+    if (currentScreenStream) {
+      currentScreenStream.getTracks().forEach((t) => {
         try {
           t.stop();
         } catch {
@@ -282,6 +289,7 @@ const VideoMeet = () => {
       });
       screenStreamRef.current = null;
     }
+    setScreenStream(null);
 
     const cameraTrack = cameraTrackRef.current;
     let trackToRestore = cameraTrack;
@@ -297,15 +305,6 @@ const VideoMeet = () => {
           sender.replaceTrack(trackToRestore).catch((err) => console.error("replaceTrack restore error:", err));
         }
       });
-
-      if (localVideoRef.current && localStreamRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
-      }
-    } else {
-      // No camera track to restore – keep local preview on camera stream if available
-      if (localVideoRef.current && localStreamRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
-      }
     }
 
     isScreenSharingRef.current = false;
@@ -321,11 +320,11 @@ const VideoMeet = () => {
     }
 
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+      const newScreenStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
       });
 
-      const screenTrack = screenStream.getVideoTracks()[0];
+      const screenTrack = newScreenStream.getVideoTracks()[0];
       if (!screenTrack) {
         console.warn("No screen video track obtained");
         return;
@@ -337,7 +336,8 @@ const VideoMeet = () => {
         cameraTrackRef.current = camTrack;
       }
 
-      screenStreamRef.current = screenStream;
+      screenStreamRef.current = newScreenStream;
+      setScreenStream(newScreenStream);
       isScreenSharingRef.current = true;
       setIsScreenSharing(true);
 
@@ -357,22 +357,18 @@ const VideoMeet = () => {
         } else {
           // Fallback if no video sender yet
           try {
-            peer.addTrack(screenTrack, screenStream);
+            peer.addTrack(screenTrack, newScreenStream);
           } catch (e) {
             console.error("addTrack screen fallback error:", e);
           }
         }
       });
-
-      // Show screen preview locally
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = screenStream;
-      }
     } catch (err) {
       console.error("Screen share error:", err);
       // NotAllowedError when user cancels – keep state consistent
       isScreenSharingRef.current = false;
       setIsScreenSharing(false);
+      setScreenStream(null);
     }
   }, [stopScreenSharing]);
 
@@ -414,11 +410,13 @@ const VideoMeet = () => {
     }
     isScreenSharingRef.current = false;
     setIsScreenSharing(false);
+    setScreenStream(null);
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
+    setLocalStream(null);
     Object.values(peersRef.current).forEach((peer) => {
       try {
         peer.close();
@@ -470,13 +468,11 @@ const VideoMeet = () => {
           return;
         }
         localStreamRef.current = stream;
+        setLocalStream(stream);
         const audioEnabled = stream.getAudioTracks()[0]?.enabled ?? true;
         const videoEnabled = stream.getVideoTracks()[0]?.enabled ?? true;
         setIsMicOn(audioEnabled);
         setIsCamOn(videoEnabled);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
         console.log("Local media started");
         connectSocket();
       } catch (error) {
@@ -491,16 +487,7 @@ const VideoMeet = () => {
     };
   }, [code, connectSocket, cleanupResources]);
 
-  useEffect(() => {
-    // Don't overwrite screen preview when screen sharing is active
-    if (isScreenSharingRef.current) return;
-    if (localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-    }
-  }, [isCamOn]);
-
   const totalParticipants = users.length + 1; // + you
-  const hasRemote = Object.keys(remoteStreams).length > 0;
 
   // =========================
   // UI
@@ -564,257 +551,54 @@ const VideoMeet = () => {
         </button>
       </div>
 
-      {/* Main content: videos + chat */}
+      {/* Main content: videos + side panels */}
       <div className="flex flex-1 flex-col overflow-hidden lg:flex-row">
         {/* Video area */}
         <div className="flex flex-1 flex-col min-h-0">
-          {/* Video Grid */}
-          <main className="flex-1 overflow-y-auto p-3 md:p-6">
-            <div
-              className={`grid gap-3 md:gap-4 h-full ${
-                hasRemote
-                  ? "grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 content-start"
-                  : "grid-cols-1 place-items-center"
-              }`}
-            >
-              {/* Local Video Tile */}
-              <div className="relative overflow-hidden rounded-xl bg-[#0f1a2e] border border-slate-800 w-full max-w-3xl aspect-video">
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className={`h-full w-full object-cover bg-black ${!isCamOn && !isScreenSharing ? "opacity-0" : "opacity-100"}`}
-                />
-
-                {/* Camera off placeholder – hidden while screen sharing */}
-                {!isCamOn && !isScreenSharing && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0f1a2e]">
-                    <div className="flex h-20 w-20 items-center justify-center rounded-full bg-slate-700 text-2xl font-bold">
-                      You
-                    </div>
-                    <p className="mt-3 text-sm text-slate-400">Camera off</p>
-                  </div>
-                )}
-
-                {/* Screen sharing badge */}
-                {isScreenSharing && (
-                  <div className="absolute top-2 left-2 flex items-center gap-1.5 rounded-full bg-yellow-400 px-2.5 py-1 text-[11px] font-semibold text-black">
-                    <span>🖥</span> Sharing screen
-                  </div>
-                )}
-
-                {/* Label + mic status */}
-                <div className="absolute bottom-2 left-2 flex items-center gap-2 rounded-full bg-black/60 px-3 py-1 text-xs backdrop-blur">
-                  <span>You {isScreenSharing ? "• Screen" : ""}</span>
-                  {!isMicOn && (
-                    <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-[10px]">Muted</span>
-                  )}
-                </div>
-
-                {/* Pill: connection */}
-                <div className={`absolute rounded-full bg-black/60 px-2 py-1 text-[11px] text-slate-300 ${isScreenSharing ? "top-2 right-2" : "top-2 right-2"}`}>
-                  {isScreenSharing ? "🖥 Sharing" : isMicOn ? "🎤 On" : "🔇 Off"} • {isScreenSharing ? "📹 Screen" : isCamOn ? "📹 On" : "📹 Off"}
-                </div>
-              </div>
-
-              {/* Remote Videos */}
-              {Object.entries(remoteStreams).map(([userId, stream]) => (
-                <RemoteVideo key={userId} userId={userId} stream={stream} />
-              ))}
-            </div>
-
-            {/* Empty state when alone */}
-            {!hasRemote && (
-              <p className="mt-4 text-center text-sm text-slate-500">
-                Waiting for others to join... Share the code <span className="font-mono text-slate-300">{code}</span>
-              </p>
-            )}
-          </main>
+          <VideoGrid
+            localStream={localStream}
+            screenStream={screenStream}
+            isMicOn={isMicOn}
+            isCamOn={isCamOn}
+            isScreenSharing={isScreenSharing}
+            remoteStreams={remoteStreams}
+            code={code}
+          />
         </div>
 
-        {/* Chat panel */}
-        {showChat && (
-          <aside className="flex h-[420px] w-full flex-col border-t border-slate-800 bg-[#070d1a] lg:h-auto lg:w-[380px] lg:border-l lg:border-t-0">
-            <Chat socket={socket} />
+        {/* Side panels: Participants + Chat */}
+        {(showParticipants || showChat) && (
+          <aside className="flex h-[420px] w-full flex-col border-t border-slate-800 bg-[#070d1a] lg:h-auto lg:w-[380px] lg:border-l lg:border-t-0 overflow-hidden">
+            {showParticipants && (
+              <div className={`flex flex-col overflow-hidden ${showChat ? "flex-1 border-b border-slate-800" : "flex-1"}`}>
+                <ParticipantList users={users} isMicOn={isMicOn} isCamOn={isCamOn} />
+              </div>
+            )}
+            {showChat && (
+              <div className={`flex flex-col overflow-hidden ${showParticipants ? "flex-1" : "flex-1"}`}>
+                <Chat socket={socket} />
+              </div>
+            )}
           </aside>
         )}
       </div>
 
       {/* Controls Bar */}
-      <footer className="sticky bottom-0 z-10 border-t border-slate-800 bg-[#070d1a]/90 backdrop-blur px-4 py-3 md:py-4">
-        <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 md:gap-3">
-          {/* Mute */}
-          <button
-            onClick={handleToggleMic}
-            aria-label={isMicOn ? "Mute microphone" : "Unmute microphone"}
-            title={isMicOn ? "Mute" : "Unmute"}
-            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium transition border ${
-              isMicOn
-                ? "bg-[#1e2a44] border-slate-700 hover:bg-[#23304f] text-white"
-                : "bg-red-500/20 border-red-500/40 text-red-300 hover:bg-red-500/30"
-            }`}
-          >
-            <span className="text-base leading-none">
-              {isMicOn ? (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
-                  <path d="M19 10a7 7 0 0 1-14 0" />
-                  <path d="M12 19v4" />
-                  <path d="M8 23h8" />
-                </svg>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M1 1l22 22" />
-                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V5a3 3 0 0 0-5.94-.6" />
-                  <path d="M17 16.95A7 7 0 0 1 5 10M12 19v4M8 23h8" />
-                </svg>
-              )}
-            </span>
-            <span className="hidden sm:inline">{isMicOn ? "Mute" : "Unmute"}</span>
-          </button>
-
-          {/* Camera */}
-          <button
-            onClick={handleToggleCamera}
-            aria-label={isCamOn ? "Turn off camera" : "Turn on camera"}
-            title={isCamOn ? "Camera off" : "Camera on"}
-            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium transition border ${
-              isCamOn
-                ? "bg-[#1e2a44] border-slate-700 hover:bg-[#23304f] text-white"
-                : "bg-red-500/20 border-red-500/40 text-red-300 hover:bg-red-500/30"
-            }`}
-          >
-            <span className="text-base leading-none">
-              {isCamOn ? (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M23 7l-7 5 7 5V7Z" />
-                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-                </svg>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M16 16L3 3" />
-                  <path d="M10.58 10.58A2 2 0 0 0 14 14" />
-                  <path d="M14.5 6.5A2 2 0 0 0 9 9.5" />
-                  <path d="M16 16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 1.17-1.83" />
-                  <path d="M23 7l-4.5 3.2A2 2 0 0 0 17 12v0a2 2 0 0 0 1.5 1.8L23 17V7Z" />
-                </svg>
-              )}
-            </span>
-            <span className="hidden sm:inline">Camera</span>
-          </button>
-
-          {/* Screen Share */}
-          <button
-            onClick={handleToggleScreenShare}
-            aria-label={isScreenSharing ? "Stop screen sharing" : "Share screen"}
-            title={isScreenSharing ? "Stop sharing" : "Share screen"}
-            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium transition border ${
-              isScreenSharing
-                ? "bg-yellow-400 border-yellow-400 text-black hover:bg-yellow-300"
-                : "bg-[#1e2a44] border-slate-700 hover:bg-[#23304f] text-white"
-            }`}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-              <path d="M8 21h8" />
-              <path d="M12 17v4" />
-            </svg>
-            <span className="hidden sm:inline">{isScreenSharing ? "Stop Share" : "Screen"}</span>
-          </button>
-
-          {/* Chat toggle */}
-          <button
-            onClick={() => setShowChat((v) => !v)}
-            aria-label={showChat ? "Hide chat" : "Show chat"}
-            title={showChat ? "Hide chat" : "Show chat"}
-            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium transition border ${
-              showChat
-                ? "bg-yellow-400 border-yellow-400 text-black hover:bg-yellow-300"
-                : "bg-[#1e2a44] border-slate-700 hover:bg-[#23304f] text-white"
-            }`}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5Z" />
-            </svg>
-            <span className="hidden sm:inline">{showChat ? "Hide Chat" : "Chat"}</span>
-          </button>
-
-          {/* Fullscreen */}
-          <button
-            onClick={handleToggleFullscreen}
-            aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-            className="flex items-center gap-2 rounded-full bg-[#1e2a44] border border-slate-700 px-4 py-2.5 text-sm font-medium hover:bg-[#23304f] transition"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              {isFullscreen ? (
-                <>
-                  <path d="M8 3H5a2 2 0 0 0-2 2v3" />
-                  <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
-                  <path d="M3 16v3a2 2 0 0 0 2 2h3" />
-                  <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
-                </>
-              ) : (
-                <>
-                  <path d="M8 3H5a2 2 0 0 0-2 2v3" />
-                  <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
-                  <path d="M3 16v3a2 2 0 0 0 2 2h3" />
-                  <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
-                </>
-              )}
-            </svg>
-            <span className="hidden sm:inline">{isFullscreen ? "Exit" : "Fullscreen"}</span>
-          </button>
-
-          {/* Divider */}
-          <div className="mx-1 hidden h-8 w-px bg-slate-700 sm:block" />
-
-          {/* Leave */}
-          <button
-            onClick={handleLeaveMeeting}
-            aria-label="Leave meeting"
-            title="Leave meeting"
-            className="flex items-center gap-2 rounded-full bg-red-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-600 transition"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <line x1="23" y1="11" x2="17" y2="11" />
-              <path d="M16 8l3 3-3 3" />
-            </svg>
-            Leave
-          </button>
-        </div>
-      </footer>
-    </div>
-  );
-};
-
-// =========================
-// REMOTE VIDEO
-// =========================
-
-const RemoteVideo = ({ userId, stream }) => {
-  const videoRef = useRef(null);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  return (
-    <div className="relative overflow-hidden rounded-xl bg-[#0f1a2e] border border-slate-800 aspect-video">
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        className="h-full w-full object-cover bg-black"
+      <MeetingControls
+        isMicOn={isMicOn}
+        isCamOn={isCamOn}
+        isScreenSharing={isScreenSharing}
+        isFullscreen={isFullscreen}
+        showChat={showChat}
+        showParticipants={showParticipants}
+        onToggleMic={handleToggleMic}
+        onToggleCamera={handleToggleCamera}
+        onToggleScreenShare={handleToggleScreenShare}
+        onToggleChat={() => setShowChat((v) => !v)}
+        onToggleParticipants={() => setShowParticipants((v) => !v)}
+        onToggleFullscreen={handleToggleFullscreen}
+        onLeave={handleLeaveMeeting}
       />
-      <p className="absolute bottom-2 left-2 rounded-full bg-black/60 px-3 py-1 text-xs backdrop-blur">
-        {userId.slice(0, 8)}
-      </p>
     </div>
   );
 };
