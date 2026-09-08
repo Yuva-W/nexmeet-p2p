@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/authContext";
 import api from "../services/api";
@@ -6,6 +6,9 @@ import api from "../services/api";
 const Home = () => {
   const { userData, setUserData } = useContext(AuthContext);
   const [meetingCode, setMeetingCode] = useState("");
+  const [meetings, setMeetings] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState("");
 
   const navigate = useNavigate();
 
@@ -34,6 +37,24 @@ const Home = () => {
           console.log(error);
       }
   };
+
+  useEffect(() => {
+    const fetchHistory = async () => {
+      try {
+        setLoadingHistory(true);
+        setHistoryError("");
+        const res = await api.get("/meeting/history");
+        setMeetings(res.data.meetings || []);
+      } catch (err) {
+        console.log("History fetch error:", err);
+        setHistoryError("Failed to load history");
+      } finally {
+        setLoadingHistory(false);
+      }
+    };
+
+    fetchHistory();
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#020712] text-white">
@@ -132,14 +153,50 @@ const Home = () => {
 
         {/* Recent meetings */}
         <section className="mt-10">
-          <h3 className="text-xl font-semibold">
-            Recent Meetings
-          </h3>
+          <h3 className="text-xl font-semibold">Recent Meetings</h3>
 
-          <div className="mt-4 rounded-xl border border-slate-800 bg-[#101827] p-8 text-center">
-            <p className="text-slate-500">
-              No recent meetings
-            </p>
+          <div className="mt-4 rounded-xl border border-slate-800 bg-[#101827] overflow-hidden">
+            {loadingHistory ? (
+              <div className="p-8 text-center">
+                <p className="text-slate-500">Loading history...</p>
+              </div>
+            ) : historyError ? (
+              <div className="p-8 text-center">
+                <p className="text-red-400 text-sm">{historyError}</p>
+              </div>
+            ) : meetings.length === 0 ? (
+              <div className="p-8 text-center">
+                <p className="text-slate-500">No recent meetings</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-800">
+                {meetings.map((m) => (
+                  <div
+                    key={m._id || m.meetingCode}
+                    className="flex items-center justify-between px-5 py-4 hover:bg-[#0f1a2e]/50 transition"
+                  >
+                    <div>
+                      <p className="font-mono font-semibold text-white tracking-wider">{m.meetingCode}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {m.createdAt
+                          ? new Date(m.createdAt).toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "2-digit",
+                              year: "numeric",
+                            })
+                          : ""}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => navigate(`/meet/${m.meetingCode}`)}
+                      className="rounded-md bg-[#635bff] px-5 py-2 text-sm font-semibold text-white transition hover:bg-[#554df0]"
+                    >
+                      Join
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 
