@@ -24,8 +24,14 @@ const VideoMeet = () => {
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
+
+  // Screen sharing refs
+  const screenStreamRef = useRef(null);
+  const cameraTrackRef = useRef(null);
+  const isScreenSharingRef = useRef(false);
 
   // =========================
   // CREATE PEER
@@ -45,9 +51,36 @@ const VideoMeet = () => {
     });
 
     // Add local audio/video
+    // If screen sharing is active, send screen video track + mic audio instead of camera
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
+      const audioTracks = localStreamRef.current.getAudioTracks();
+      audioTracks.forEach((track) => {
         peer.addTrack(track, localStreamRef.current);
+      });
+
+      if (isScreenSharingRef.current && screenStreamRef.current) {
+        const screenVideoTrack = screenStreamRef.current.getVideoTracks()[0];
+        if (screenVideoTrack) {
+          try {
+            peer.addTrack(screenVideoTrack, screenStreamRef.current);
+          } catch (e) {
+            console.error("addTrack screen error:", e);
+          }
+        } else {
+          // fallback to camera if no screen track
+          localStreamRef.current.getVideoTracks().forEach((track) => {
+            peer.addTrack(track, localStreamRef.current);
+          });
+        }
+      } else {
+        localStreamRef.current.getVideoTracks().forEach((track) => {
+          peer.addTrack(track, localStreamRef.current);
+        });
+      }
+    } else if (isScreenSharingRef.current && screenStreamRef.current) {
+      // edge: no local stream but screen stream exists
+      screenStreamRef.current.getTracks().forEach((track) => {
+        peer.addTrack(track, screenStreamRef.current);
       });
     }
 
@@ -209,6 +242,19 @@ const VideoMeet = () => {
   }, []);
 
   const handleToggleCamera = useCallback(() => {
+    // While screen sharing, toggle the stored camera track (so state restores correctly) but keep screen visible
+    if (isScreenSharingRef.current) {
+      const camTrack = cameraTrackRef.current || localStreamRef.current?.getVideoTracks()[0];
+      if (!camTrack) return;
+      const nextEnabled = !camTrack.enabled;
+      camTrack.enabled = nextEnabled;
+      // also keep localStream's video track in sync
+      localStreamRef.current?.getVideoTracks().forEach((t) => {
+        t.enabled = nextEnabled;
+      });
+      setIsCamOn(nextEnabled);
+      return;
+    }
     const stream = localStreamRef.current;
     if (!stream) return;
     const videoTracks = stream.getVideoTracks();
@@ -219,6 +265,116 @@ const VideoMeet = () => {
     });
     setIsCamOn(nextEnabled);
   }, []);
+
+  // =========================
+  // SCREEN SHARING
+  // =========================
+
+  const stopScreenSharing = useCallback(() => {
+    const screenStream = screenStreamRef.current;
+    if (screenStream) {
+      screenStream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          // ignore
+        }
+      });
+      screenStreamRef.current = null;
+    }
+
+    const cameraTrack = cameraTrackRef.current;
+    let trackToRestore = cameraTrack;
+
+    if (!trackToRestore || trackToRestore.readyState === "ended") {
+      trackToRestore = localStreamRef.current?.getVideoTracks()[0] || null;
+    }
+
+    if (trackToRestore) {
+      Object.values(peersRef.current).forEach((peer) => {
+        const sender = peer.getSenders().find((s) => s.track && s.track.kind === "video");
+        if (sender) {
+          sender.replaceTrack(trackToRestore).catch((err) => console.error("replaceTrack restore error:", err));
+        }
+      });
+
+      if (localVideoRef.current && localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+    } else {
+      // No camera track to restore – keep local preview on camera stream if available
+      if (localVideoRef.current && localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+    }
+
+    isScreenSharingRef.current = false;
+    setIsScreenSharing(false);
+    console.log("Screen sharing stopped – camera restored");
+  }, []);
+
+  const handleToggleScreenShare = useCallback(async () => {
+    // If already sharing, stop and restore camera
+    if (isScreenSharingRef.current) {
+      stopScreenSharing();
+      return;
+    }
+
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+      });
+
+      const screenTrack = screenStream.getVideoTracks()[0];
+      if (!screenTrack) {
+        console.warn("No screen video track obtained");
+        return;
+      }
+
+      // Save current camera track for restore
+      const camTrack = localStreamRef.current?.getVideoTracks()[0];
+      if (camTrack) {
+        cameraTrackRef.current = camTrack;
+      }
+
+      screenStreamRef.current = screenStream;
+      isScreenSharingRef.current = true;
+      setIsScreenSharing(true);
+
+      console.log("Screen sharing started");
+
+      // Handle user clicking browser's Stop sharing
+      screenTrack.onended = () => {
+        console.log("Screen share ended via browser UI");
+        stopScreenSharing();
+      };
+
+      // Replace camera track with screen track in all peer connections (no renegotiation)
+      Object.values(peersRef.current).forEach((peer) => {
+        const sender = peer.getSenders().find((s) => s.track && s.track.kind === "video");
+        if (sender) {
+          sender.replaceTrack(screenTrack).catch((err) => console.error("replaceTrack screen error:", err));
+        } else {
+          // Fallback if no video sender yet
+          try {
+            peer.addTrack(screenTrack, screenStream);
+          } catch (e) {
+            console.error("addTrack screen fallback error:", e);
+          }
+        }
+      });
+
+      // Show screen preview locally
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = screenStream;
+      }
+    } catch (err) {
+      console.error("Screen share error:", err);
+      // NotAllowedError when user cancels – keep state consistent
+      isScreenSharingRef.current = false;
+      setIsScreenSharing(false);
+    }
+  }, [stopScreenSharing]);
 
   const handleToggleFullscreen = useCallback(async () => {
     try {
@@ -245,6 +401,20 @@ const VideoMeet = () => {
   }, []);
 
   const cleanupResources = useCallback(() => {
+    // Stop screen share stream if active
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      });
+      screenStreamRef.current = null;
+    }
+    isScreenSharingRef.current = false;
+    setIsScreenSharing(false);
+
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
@@ -322,6 +492,8 @@ const VideoMeet = () => {
   }, [code, connectSocket, cleanupResources]);
 
   useEffect(() => {
+    // Don't overwrite screen preview when screen sharing is active
+    if (isScreenSharingRef.current) return;
     if (localVideoRef.current && localStreamRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
     }
@@ -412,11 +584,11 @@ const VideoMeet = () => {
                   autoPlay
                   muted
                   playsInline
-                  className={`h-full w-full object-cover bg-black ${!isCamOn ? "opacity-0" : "opacity-100"}`}
+                  className={`h-full w-full object-cover bg-black ${!isCamOn && !isScreenSharing ? "opacity-0" : "opacity-100"}`}
                 />
 
-                {/* Camera off placeholder */}
-                {!isCamOn && (
+                {/* Camera off placeholder – hidden while screen sharing */}
+                {!isCamOn && !isScreenSharing && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0f1a2e]">
                     <div className="flex h-20 w-20 items-center justify-center rounded-full bg-slate-700 text-2xl font-bold">
                       You
@@ -425,17 +597,24 @@ const VideoMeet = () => {
                   </div>
                 )}
 
+                {/* Screen sharing badge */}
+                {isScreenSharing && (
+                  <div className="absolute top-2 left-2 flex items-center gap-1.5 rounded-full bg-yellow-400 px-2.5 py-1 text-[11px] font-semibold text-black">
+                    <span>🖥</span> Sharing screen
+                  </div>
+                )}
+
                 {/* Label + mic status */}
                 <div className="absolute bottom-2 left-2 flex items-center gap-2 rounded-full bg-black/60 px-3 py-1 text-xs backdrop-blur">
-                  <span>You</span>
+                  <span>You {isScreenSharing ? "• Screen" : ""}</span>
                   {!isMicOn && (
                     <span className="rounded-full bg-red-500 px-1.5 py-0.5 text-[10px]">Muted</span>
                   )}
                 </div>
 
                 {/* Pill: connection */}
-                <div className="absolute top-2 right-2 rounded-full bg-black/60 px-2 py-1 text-[11px] text-slate-300">
-                  {isMicOn ? "🎤 On" : "🔇 Off"} • {isCamOn ? "📹 On" : "📹 Off"}
+                <div className={`absolute rounded-full bg-black/60 px-2 py-1 text-[11px] text-slate-300 ${isScreenSharing ? "top-2 right-2" : "top-2 right-2"}`}>
+                  {isScreenSharing ? "🖥 Sharing" : isMicOn ? "🎤 On" : "🔇 Off"} • {isScreenSharing ? "📹 Screen" : isCamOn ? "📹 On" : "📹 Off"}
                 </div>
               </div>
 
@@ -523,6 +702,25 @@ const VideoMeet = () => {
               )}
             </span>
             <span className="hidden sm:inline">Camera</span>
+          </button>
+
+          {/* Screen Share */}
+          <button
+            onClick={handleToggleScreenShare}
+            aria-label={isScreenSharing ? "Stop screen sharing" : "Share screen"}
+            title={isScreenSharing ? "Stop sharing" : "Share screen"}
+            className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium transition border ${
+              isScreenSharing
+                ? "bg-yellow-400 border-yellow-400 text-black hover:bg-yellow-300"
+                : "bg-[#1e2a44] border-slate-700 hover:bg-[#23304f] text-white"
+            }`}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+              <path d="M8 21h8" />
+              <path d="M12 17v4" />
+            </svg>
+            <span className="hidden sm:inline">{isScreenSharing ? "Stop Share" : "Screen"}</span>
           </button>
 
           {/* Chat toggle */}
