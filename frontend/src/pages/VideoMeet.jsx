@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
+import api from "../services/api";
 import Chat from "../components/Chat";
 import VideoGrid from "../components/VideoGrid";
 import MeetingControls from "../components/MeetingControls";
@@ -32,13 +33,48 @@ const VideoMeet = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
+
+  // Meeting validation
+  const [meetingValid, setMeetingValid] = useState(null);
+  const [validating, setValidating] = useState(true);
 
   // Screen sharing refs
   const screenStreamRef = useRef(null);
   const cameraTrackRef = useRef(null);
   const isScreenSharingRef = useRef(false);
+
+  // =========================
+  // VALIDATE MEETING
+  // =========================
+
+  useEffect(() => {
+    let cancelled = false;
+    const validate = async () => {
+      try {
+        setValidating(true);
+        await api.get(`/meeting/${code}`);
+        if (!cancelled) setMeetingValid(true);
+      } catch (err) {
+        if (!cancelled) {
+          if (err.response?.status === 404) {
+            setMeetingValid(false);
+          } else {
+            // Treat other errors as invalid for now (e.g., 401)
+            setMeetingValid(false);
+          }
+        }
+      } finally {
+        if (!cancelled) setValidating(false);
+      }
+    };
+    validate();
+    return () => {
+      cancelled = true;
+    };
+  }, [code]);
 
   // =========================
   // CREATE PEER
@@ -450,11 +486,23 @@ const VideoMeet = () => {
     }
   };
 
+  const handleCopyLink = async () => {
+    try {
+      const link = `${window.location.origin}/meet/${code}`;
+      await navigator.clipboard.writeText(link);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      setCopiedLink(false);
+    }
+  };
+
   // =========================
   // GET CAMERA + MIC
   // =========================
 
   useEffect(() => {
+    if (validating || meetingValid !== true) return;
     let cancelled = false;
     const startMeeting = async () => {
       try {
@@ -485,9 +533,50 @@ const VideoMeet = () => {
       console.log("Cleaning meeting (unmount)...");
       cleanupResources();
     };
-  }, [code, connectSocket, cleanupResources]);
+  }, [code, connectSocket, cleanupResources, validating, meetingValid]);
 
   const totalParticipants = users.length + 1; // + you
+
+  // =========================
+  // VALIDATION UI
+  // =========================
+
+  if (validating) {
+    return (
+      <div className="min-h-screen bg-[#020712] text-white flex flex-col items-center justify-center p-6">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-slate-700 border-t-yellow-400" />
+        <p className="mt-4 text-sm text-slate-400">Validating meeting...</p>
+        <p className="mt-1 font-mono text-xs text-slate-600">{code}</p>
+      </div>
+    );
+  }
+
+  if (meetingValid === false) {
+    return (
+      <div className="min-h-screen bg-[#020712] text-white flex flex-col items-center justify-center p-6 text-center">
+        <div className="rounded-xl border border-slate-800 bg-[#101827] p-8 max-w-md w-full">
+          <h2 className="text-2xl font-bold">Meeting not found</h2>
+          <p className="mt-2 text-sm text-slate-400">
+            No meeting exists with code <span className="font-mono font-semibold text-white">{code}</span>. It may have expired or the code is incorrect.
+          </p>
+          <div className="mt-6 flex gap-3 justify-center">
+            <button
+              onClick={() => navigate("/home")}
+              className="rounded-md bg-yellow-400 px-6 py-2.5 font-semibold text-black hover:bg-yellow-300 transition"
+            >
+              Go Home
+            </button>
+            <button
+              onClick={() => navigate(-1)}
+              className="rounded-md border border-slate-700 px-6 py-2.5 font-semibold hover:bg-slate-800 transition"
+            >
+              Go Back
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // =========================
   // UI
@@ -505,7 +594,7 @@ const VideoMeet = () => {
         </h1>
 
         <div className="flex items-center gap-3">
-          {/* Meeting code */}
+          {/* Meeting code + share link */}
           <div className="hidden sm:flex items-center gap-2 rounded-full border border-slate-800 bg-[#101827] px-3 py-1.5">
             <span className="text-xs text-slate-400">Code:</span>
             <span className="text-sm font-mono font-medium">{code}</span>
@@ -515,6 +604,13 @@ const VideoMeet = () => {
               title="Copy meeting code"
             >
               {copied ? "Copied!" : "Copy"}
+            </button>
+            <button
+              onClick={handleCopyLink}
+              className="rounded-md bg-yellow-400 px-2.5 py-1 text-xs font-semibold text-black hover:bg-yellow-300 transition"
+              title="Copy meeting link"
+            >
+              {copiedLink ? "Copied!" : "Copy Link"}
             </button>
           </div>
 
@@ -543,12 +639,20 @@ const VideoMeet = () => {
         <p className="text-xs text-slate-400">
           Meeting code: <span className="font-mono font-medium text-white">{code}</span>
         </p>
-        <button
-          onClick={handleCopyCode}
-          className="rounded-md bg-slate-800 px-2 py-1 text-xs"
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopyCode}
+            className="rounded-md bg-slate-800 px-2 py-1 text-xs"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <button
+            onClick={handleCopyLink}
+            className="rounded-md bg-yellow-400 px-2 py-1 text-xs font-semibold text-black"
+          >
+            {copiedLink ? "Copied" : "Link"}
+          </button>
+        </div>
       </div>
 
       {/* Main content: videos + side panels */}

@@ -9,6 +9,8 @@ const Home = () => {
   const [meetings, setMeetings] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState("");
+  const [joinError, setJoinError] = useState("");
+  const [joining, setJoining] = useState(false);
 
   const navigate = useNavigate();
 
@@ -18,14 +20,30 @@ const Home = () => {
     navigate("/auth");
   };
 
-  const handleJoinMeeting = (e) => {
+  const handleJoinMeeting = async (e) => {
     e.preventDefault();
 
-    if (!meetingCode.trim()) {
+    const trimmed = meetingCode.trim();
+    if (!trimmed) {
       return;
     }
 
-    navigate(`/meet/${meetingCode.trim()}`);
+    setJoinError("");
+    setJoining(true);
+    try {
+      await api.get(`/meeting/${trimmed}`);
+      navigate(`/meet/${trimmed}`);
+    } catch (err) {
+      if (err.response?.status === 404) {
+        setJoinError("Meeting not found");
+      } else if (err.response?.status === 401) {
+        setJoinError("Please log in again");
+      } else {
+        setJoinError(err.response?.data?.message || "Failed to join meeting");
+      }
+    } finally {
+      setJoining(false);
+    }
   };
 
   const handleCreateMeeting = async () => {
@@ -135,18 +153,25 @@ const Home = () => {
               <input
                 type="text"
                 value={meetingCode}
-                onChange={(e) => setMeetingCode(e.target.value)}
+                onChange={(e) => {
+                  setMeetingCode(e.target.value);
+                  if (joinError) setJoinError("");
+                }}
                 placeholder="Meeting code"
                 className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#202b3d] px-4 py-3 text-white outline-none placeholder:text-slate-500 focus:border-yellow-400"
               />
 
               <button
                 type="submit"
-                className="rounded-md bg-[#635bff] px-6 py-3 font-semibold transition hover:bg-[#554df0]"
+                disabled={joining}
+                className="rounded-md bg-[#635bff] px-6 py-3 font-semibold transition hover:bg-[#554df0] disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Join
+                {joining ? "Joining..." : "Join"}
               </button>
             </form>
+            {joinError && (
+              <p className="mt-3 text-sm text-red-400">{joinError}</p>
+            )}
           </div>
 
         </section>
